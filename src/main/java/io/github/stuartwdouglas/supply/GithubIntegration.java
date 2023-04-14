@@ -103,7 +103,8 @@ public class GithubIntegration {
                 if (conclusion == GHCheckRun.Conclusion.FAILURE) {
                     finalResult.append(String.format("""
                         <details>
-                        <summary>There are %s Community Artifacts in the Build</summary>
+                        <summary>There are %s untrusted artifacts in the result</summary>
+
                         ```diff
                         """, failureList.size()));
                     for (var i : failureList) {
@@ -114,9 +115,10 @@ public class GithubIntegration {
                     for (var e : successList.entrySet()) {
                         finalResult.append(String.format("""
                             <details>
-                            <summary>There are %s Community Artifacts in the Build</summary>
+                            <summary>There are %s artifacts from %s in the result/summary>
+
                             ```diff
-                            """, e.getValue().size()));
+                            """, e.getValue().size(), e.getKey()));
                         for (var i : e.getValue()) {
                             finalResult.append("+ ").append(i).append("\n");
                         }
@@ -124,8 +126,7 @@ public class GithubIntegration {
                     }
                 }
 
-                var output = new GHCheckRunBuilder.Output(failureCount > 0 ? "Build Contained Untrusted Dependencies" : "All dependencies are trusted", str);
-                output.withText(str);
+                var output = new GHCheckRunBuilder.Output(failureList.size() > 0 ? "Build Contained Untrusted Dependencies" : "All dependencies are trusted", finalResult.toString());
                 checkRun.update().withConclusion(conclusion).add(output).withStatus(GHCheckRun.Status.COMPLETED).create();
                 break;
             }
