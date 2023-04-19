@@ -10,7 +10,7 @@ import io.fabric8.kubernetes.model.annotation.Version;
 @Group(ModelConstants.GROUP)
 @Version(ModelConstants.VERSION)
 @JsonInclude(Include.NON_NULL)
-public class ComponentBuild extends CustomResource<ComponentBuildSpec, Void>
+public class ComponentBuild extends CustomResource<ComponentBuildSpec, ComponentBuildStatus>
         implements Namespaced {
 
     @Override
@@ -18,4 +18,8 @@ public class ComponentBuild extends CustomResource<ComponentBuildSpec, Void>
         return new ComponentBuildSpec();
     }
 
+    @Override
+    protected ComponentBuildStatus initStatus() {
+        return new ComponentBuildStatus();
+    }
 }

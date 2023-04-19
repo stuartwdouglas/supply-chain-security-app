@@ -1,19 +1,30 @@
 package io.github.stuartwdouglas.supply;
 
 import io.fabric8.kubernetes.client.KubernetesClient;
+import io.fabric8.kubernetes.client.Watcher;
+import io.fabric8.kubernetes.client.WatcherException;
 import io.github.stuartwdouglas.supply.model.ComponentBuild;
+import io.quarkiverse.githubapp.GitHubClientProvider;
 import io.quarkiverse.githubapp.event.PullRequest;
 import io.quarkiverse.githubapp.event.PullRequestReview;
+import io.quarkiverse.githubapp.event.Star;
 import io.quarkiverse.githubapp.event.WorkflowRun;
 import io.quarkus.logging.Log;
+import io.quarkus.runtime.Startup;
+import io.quarkus.runtime.util.HashUtil;
+import jakarta.annotation.PostConstruct;
+import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import org.cyclonedx.BomParserFactory;
 import org.cyclonedx.exception.ParseException;
 import org.cyclonedx.model.Bom;
+import org.kohsuke.github.GHArtifact;
 import org.kohsuke.github.GHCheckRun;
 import org.kohsuke.github.GHCheckRunBuilder;
 import org.kohsuke.github.GHEventPayload;
 import org.kohsuke.github.GHWorkflowRun;
+import org.kohsuke.github.GitHub;
+import org.kohsuke.github.PagedIterable;
 import org.kohsuke.github.function.InputStreamFunction;
 
 import java.io.IOException;
@@ -23,13 +34,66 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.zip.ZipInputStream;
-
+@Startup
+@ApplicationScoped
 public class GithubIntegration {
 
+    public static final String SUPPLY_CHAIN_CHECK_DONE = "supply-chain-check-done";
     @Inject
     KubernetesClient client;
 
+    @Inject
+    GitHubClientProvider gitHub;
+
     public static final String SUPPLY_CHAIN_CHECK = "Supply Chain Check";
+
+
+    @PostConstruct
+    public void setupWatch() {
+        client.resources(ComponentBuild.class).watch(new Watcher<ComponentBuild>() {
+            @Override
+            public void eventReceived(Action action, ComponentBuild componentBuild) {
+
+                try {
+                    GHCheckRun checkRun = null;
+                    var repo = gitHub.getApplicationClient().getRepository(componentBuild.getSpec().getScmURL());
+
+                    for (var check : repo.getCheckRuns(componentBuild.getSpec().getTag())) {
+                        if (check.getName().equals(SUPPLY_CHAIN_CHECK)) { //TODO: check app as well
+                            checkRun = check;
+                            break;
+                        }
+                    }
+
+                    if (componentBuild.getStatus().getOutstanding() == 0) {
+                        if (componentBuild.getMetadata().getAnnotations() != null) {
+                            if (componentBuild.getMetadata().getAnnotations().containsKey(SUPPLY_CHAIN_CHECK_DONE)) {
+                                return;
+                            }
+                        }
+                    }
+                    String summary = checkRun.getOutput().getSummary();
+                    for (var i : componentBuild.getStatus().getArtifactState().entrySet()) {
+                        if (i.getValue().isBuilt()) {
+                            summary = summary.replace(i.getKey() + "\n", i.getKey() + "[TICK]\n");
+                        }
+                    }
+                    checkRun.update().add(new GHCheckRunBuilder.Output(checkRun.getOutput().getTitle(), summary)).create();
+
+                    componentBuild.getMetadata().getAnnotations().put(SUPPLY_CHAIN_CHECK_DONE, "true");
+                    client.resource(componentBuild).update();
+
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
+
+            @Override
+            public void onClose(WatcherException e) {
+
+            }
+        });
+    }
 
     void onOpen(@PullRequest.Opened GHEventPayload.PullRequest pullRequest) throws IOException {
         pullRequest.getPullRequest().comment("Hello from my GitHub App");
@@ -70,7 +134,9 @@ public class GithubIntegration {
             Log.error("Check run not found");
             return;
         }
-        for (var artifact : wfr.listArtifacts()) {
+        PagedIterable<GHArtifact> artifacts = wfr.listArtifacts();
+        for (var artifact : artifacts) {
+            Log.infof("Examining artifact %s", artifact.getName());
             if (artifact.getName().equals("sbom.json")) {
                 Log.infof("Found sbom.json");
                 Bom sbom = artifact.download(new InputStreamFunction<Bom>() {
@@ -109,34 +175,34 @@ public class GithubIntegration {
 
                 if (conclusion == GHCheckRun.Conclusion.FAILURE) {
                     finalResult.append(String.format("""
-                        <details>
-                        <summary>There are %s untrusted artifacts in the result</summary>
+                            <details>
+                            <summary>There are %s untrusted artifacts in the result</summary>
 
-                        ```diff
-                        """, failureList.size()));
+                            ```diff
+                            """, failureList.size()));
                     for (var i : failureList) {
                         finalResult.append("- ").append(i).append("\n");
                     }
                     finalResult.append("```\n</details>");
 
                     ComponentBuild componentBuild = new ComponentBuild();
-                    componentBuild.getMetadata().setGenerateName("pull-request-build");
+                    componentBuild.getMetadata().setName("pull-request-build-" + wfr.getHeadSha());
                     for (var pr : wfr.getPullRequests()) {
                         componentBuild.getSpec().setPrURL(pr.getUrl().toExternalForm());
                     }
                     componentBuild.getSpec().setArtifacts(failureList);
                     componentBuild.getSpec().setTag(wfr.getHeadSha());
-                    componentBuild.getSpec().setScmURL(wfr.getRepository().getHttpTransportUrl());
+                    componentBuild.getSpec().setScmURL(wfr.getRepository().getName());
                     client.resources(ComponentBuild.class).resource(componentBuild).create();
 
                 } else {
                     for (var e : successList.entrySet()) {
                         finalResult.append(String.format("""
-                            <details>
-                            <summary>There are %s artifacts from %s in the result/summary>
+                                <details>
+                                <summary>There are %s artifacts from %s in the result/summary>
 
-                            ```diff
-                            """, e.getValue().size(), e.getKey()));
+                                ```diff
+                                """, e.getValue().size(), e.getKey()));
                         for (var i : e.getValue()) {
                             finalResult.append("+ ").append(i).append("\n");
                         }
