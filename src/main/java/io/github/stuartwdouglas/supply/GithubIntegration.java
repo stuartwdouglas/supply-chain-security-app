@@ -1,9 +1,12 @@
 package io.github.stuartwdouglas.supply;
 
+import io.fabric8.kubernetes.client.KubernetesClient;
+import io.github.stuartwdouglas.supply.model.ComponentBuild;
 import io.quarkiverse.githubapp.event.PullRequest;
 import io.quarkiverse.githubapp.event.PullRequestReview;
 import io.quarkiverse.githubapp.event.WorkflowRun;
 import io.quarkus.logging.Log;
+import jakarta.inject.Inject;
 import org.cyclonedx.BomParserFactory;
 import org.cyclonedx.exception.ParseException;
 import org.cyclonedx.model.Bom;
@@ -22,6 +25,9 @@ import java.util.Map;
 import java.util.zip.ZipInputStream;
 
 public class GithubIntegration {
+
+    @Inject
+    KubernetesClient client;
 
     public static final String SUPPLY_CHAIN_CHECK = "Supply Chain Check";
 
@@ -51,6 +57,7 @@ public class GithubIntegration {
     }
 
     private void handleWorkflowRun(GHWorkflowRun wfr) throws IOException {
+
         Log.infof("Workflow completed for %s", wfr.getHeadSha());
         GHCheckRun checkRun = null;
         for (var check : wfr.getRepository().getCheckRuns(wfr.getHeadSha())) {
@@ -111,6 +118,17 @@ public class GithubIntegration {
                         finalResult.append("- ").append(i).append("\n");
                     }
                     finalResult.append("```\n</details>");
+
+                    ComponentBuild componentBuild = new ComponentBuild();
+                    componentBuild.getMetadata().setGenerateName("pull-request-build");
+                    for (var pr : wfr.getPullRequests()) {
+                        componentBuild.getSpec().setPrURL(pr.getUrl().toExternalForm());
+                    }
+                    componentBuild.getSpec().setArtifacts(failureList);
+                    componentBuild.getSpec().setTag(wfr.getHeadSha());
+                    componentBuild.getSpec().setScmURL(wfr.getRepository().getHttpTransportUrl());
+                    client.resources(ComponentBuild.class).resource(componentBuild).create();
+
                 } else {
                     for (var e : successList.entrySet()) {
                         finalResult.append(String.format("""

@@ -28,6 +28,10 @@
     </dependencies>
   </dependencyManagement>
   <dependencies>
+      <dependency>
+          <groupId>io.quarkus</groupId>
+          <artifactId>quarkus-kubernetes-client</artifactId>
+      </dependency>
     <dependency>
       <groupId>io.quarkiverse.githubapp</groupId>
       <artifactId>quarkus-github-app</artifactId>
